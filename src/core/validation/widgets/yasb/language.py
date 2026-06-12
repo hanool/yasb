@@ -24,11 +24,27 @@ class LanguageCallbacksConfig(CallbacksConfig):
     on_left: str = "toggle_label"
 
 
+class LabelMapMatchConfig(CustomBaseModel):
+    lang: dict[str, str | int | bool | None] = {}
+    ime: dict[str, str | int | bool | None] = {}
+
+
+class LabelMapRuleConfig(CustomBaseModel):
+    match: LabelMapMatchConfig = LabelMapMatchConfig()
+    value: str
+
+
+class LabelMapConfig(CustomBaseModel):
+    default: str = ""
+    rules: list[LabelMapRuleConfig] = []
+
+
 class LanguageConfig(CustomBaseModel):
     label: str = "{lang[language_code]}-{lang[country_code]}"
     label_alt: str = "{lang[full_name]}"
     update_interval: int = Field(default=5, ge=1, le=3600)
     class_name: str = ""
+    label_maps: dict[str, LabelMapConfig] = {}
     language_menu: LanguageMenuConfig = LanguageMenuConfig()
     keybindings: list[KeybindingConfig] = []
     callbacks: LanguageCallbacksConfig = LanguageCallbacksConfig()

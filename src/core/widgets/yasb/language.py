@@ -11,10 +11,25 @@ from win32con import WM_INPUTLANGCHANGEREQUEST
 
 from core.utils.utilities import PopupWidget, refresh_widget_style
 from core.utils.win32.bindings import (
+    imm32,
     kernel32,
     user32,
 )
 from core.utils.win32.constants import (
+    IMC_GETCONVERSIONMODE,
+    IMC_GETOPENSTATUS,
+    IMC_GETSENTENCEMODE,
+    IME_CMODE_CHARCODE,
+    IME_CMODE_EUDC,
+    IME_CMODE_FIXED,
+    IME_CMODE_FULLSHAPE,
+    IME_CMODE_HANJACONVERT,
+    IME_CMODE_KATAKANA,
+    IME_CMODE_NATIVE,
+    IME_CMODE_NOCONVERSION,
+    IME_CMODE_ROMAN,
+    IME_CMODE_SOFTKBD,
+    IME_CMODE_SYMBOL,
     LOCALE_NAME_MAX_LENGTH,
     LOCALE_SCOUNTRY,
     LOCALE_SISO639LANGNAME,
@@ -24,9 +39,14 @@ from core.utils.win32.constants import (
     LOCALE_SNAME,
     LOCALE_SNATIVECTRYNAME,
     LOCALE_SNATIVELANGNAME,
+    SMTO_ABORTIFHUNG,
+    WM_IME_CONTROL,
 )
+from core.utils.win32.structs import GUITHREADINFO
 from core.validation.widgets.yasb.language import LanguageConfig
 from core.widgets.base import BaseWidget
+
+IME_TIMEOUT_MS = 30
 
 
 class LanguageWidget(BaseWidget):
@@ -84,9 +104,11 @@ class LanguageWidget(BaseWidget):
         widget_index = 0
         prev_caps_lock = self._caps_lock_active
         try:
-            lang = self._get_current_keyboard_language()
+            lang, ime = self._get_current_keyboard_state()
         except:
             lang = None
+            ime = None
+        mapped = self._get_label_maps(lang, ime) if lang and ime else None
 
         if self._caps_lock_active != prev_caps_lock:
             if self._caps_lock_active:
@@ -104,9 +126,36 @@ class LanguageWidget(BaseWidget):
                     active_widgets[widget_index].setText(icon)
                 else:
                     # Update label with formatted content
-                    formatted_text = part.format(lang=lang) if lang else part
+                    formatted_text = part.format(lang=lang, ime=ime, mapped=mapped) if lang else part
                     active_widgets[widget_index].setText(formatted_text)
                 widget_index += 1
+
+    def _get_label_maps(self, lang: dict, ime: dict) -> dict:
+        mapped = {}
+        for name, label_map in self.config.label_maps.items():
+            value = label_map.default
+            for rule in label_map.rules:
+                if self._matches_label_map_rule(rule.match.lang, lang) and self._matches_label_map_rule(
+                    rule.match.ime,
+                    ime,
+                ):
+                    value = rule.value
+                    break
+            mapped[name] = value.format(lang=lang, ime=ime, mapped=mapped)
+        return mapped
+
+    def _matches_label_map_rule(self, match: dict, data: dict) -> bool:
+        for key, expected in match.items():
+            if key not in data or not self._matches_label_map_value(data[key], expected):
+                return False
+        return True
+
+    def _matches_label_map_value(self, value, expected) -> bool:
+        if expected is None:
+            return value is None
+        if isinstance(value, bool) or isinstance(expected, bool):
+            return value is expected
+        return value == expected
 
     def _on_settings_click(self, ev: QMouseEvent | None):
         if ev and ev.button() == Qt.MouseButton.LeftButton:
@@ -390,11 +439,12 @@ class LanguageWidget(BaseWidget):
             return False
 
     # Get the current keyboard layout
-    def _get_current_keyboard_language(self):
+    def _get_current_keyboard_state(self):
         # Get the foreground window (the active window)
         hwnd = user32.GetForegroundWindow()
         # Get the thread id of the foreground window
         thread_id = user32.GetWindowThreadProcessId(hwnd, None)
+        focused_hwnd = self._get_focused_window(hwnd, thread_id)
         # Get the active input locale identifier for the thread
         input_locale_id = user32.GetKeyboardLayout(thread_id)
         # Extract the low word (language identifier) and high word (keyboard layout identifier) from the active input locale identifier
@@ -442,7 +492,7 @@ class LanguageWidget(BaseWidget):
         # Caps Lock state
         self._caps_lock_active = bool(user32.GetKeyState(0x14) & 0x0001)
 
-        return {
+        lang = {
             "language_code": language_code,
             "iso_language_code": iso_language_code,
             "country_code": country_code,
@@ -453,3 +503,126 @@ class LanguageWidget(BaseWidget):
             "full_layout_name": full_layout_locale_name.value,
             "layout_country_name": layout_country_name.value,
         }
+        return lang, self._get_current_ime_state(focused_hwnd)
+
+    def _get_focused_window(self, fallback_hwnd: int, thread_id: int) -> int:
+        if not thread_id:
+            return fallback_hwnd
+
+        gui_thread_info = GUITHREADINFO()
+        gui_thread_info.cbSize = ctypes.sizeof(GUITHREADINFO)
+        if user32.GetGUIThreadInfo(thread_id, ctypes.byref(gui_thread_info)):
+            if gui_thread_info.hwndFocus:
+                return gui_thread_info.hwndFocus
+            if gui_thread_info.hwndActive:
+                return gui_thread_info.hwndActive
+        return fallback_hwnd
+
+    def _get_current_ime_state(self, hwnd: int) -> dict:
+        context_state = self._get_current_ime_state_from_context(hwnd)
+        if context_state:
+            return context_state
+
+        return self._get_current_ime_state_from_default_window(hwnd)
+
+    def _get_current_ime_state_from_context(self, hwnd: int) -> dict | None:
+        if not hwnd:
+            return None
+
+        himc = imm32.ImmGetContext(hwnd)
+        if not himc:
+            return None
+
+        try:
+            conversion_mode = ctypes.c_ulong()
+            sentence_mode = ctypes.c_ulong()
+            if not imm32.ImmGetConversionStatus(
+                himc,
+                ctypes.byref(conversion_mode),
+                ctypes.byref(sentence_mode),
+            ):
+                return None
+
+            return self._build_ime_state(
+                bool(imm32.ImmGetOpenStatus(himc)),
+                conversion_mode.value,
+                sentence_mode.value,
+            )
+        finally:
+            imm32.ImmReleaseContext(hwnd, himc)
+
+    def _get_current_ime_state_from_default_window(self, hwnd: int) -> dict:
+        ime_hwnd = imm32.ImmGetDefaultIMEWnd(hwnd) if hwnd else 0
+        if not ime_hwnd:
+            return self._empty_ime_state()
+
+        open_status = self._send_ime_control(ime_hwnd, IMC_GETOPENSTATUS)
+        conversion_mode = self._send_ime_control(ime_hwnd, IMC_GETCONVERSIONMODE)
+        sentence_mode = self._send_ime_control(ime_hwnd, IMC_GETSENTENCEMODE)
+
+        if open_status is None and conversion_mode is None and sentence_mode is None:
+            return self._empty_ime_state()
+        return self._build_ime_state(
+            bool(open_status) if open_status is not None else None,
+            conversion_mode,
+            sentence_mode,
+        )
+
+    def _build_ime_state(
+        self, open_status: bool | None, conversion_mode: int | None, sentence_mode: int | None
+    ) -> dict:
+        available = open_status is not None or conversion_mode is not None or sentence_mode is not None
+        return {
+            "available": available,
+            "open": open_status,
+            "conversion_mode": conversion_mode,
+            "sentence_mode": sentence_mode,
+            "cmode_native": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_NATIVE),
+            "cmode_katakana": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_KATAKANA),
+            "cmode_fullshape": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_FULLSHAPE),
+            "cmode_roman": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_ROMAN),
+            "cmode_charcode": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_CHARCODE),
+            "cmode_hanjaconvert": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_HANJACONVERT),
+            "cmode_softkbd": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_SOFTKBD),
+            "cmode_noconversion": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_NOCONVERSION),
+            "cmode_eudc": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_EUDC),
+            "cmode_symbol": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_SYMBOL),
+            "cmode_fixed": self._has_ime_conversion_mode(conversion_mode, IME_CMODE_FIXED),
+        }
+
+    def _empty_ime_state(self) -> dict:
+        return {
+            "available": False,
+            "open": None,
+            "conversion_mode": None,
+            "sentence_mode": None,
+            "cmode_native": None,
+            "cmode_katakana": None,
+            "cmode_fullshape": None,
+            "cmode_roman": None,
+            "cmode_charcode": None,
+            "cmode_hanjaconvert": None,
+            "cmode_softkbd": None,
+            "cmode_noconversion": None,
+            "cmode_eudc": None,
+            "cmode_symbol": None,
+            "cmode_fixed": None,
+        }
+
+    def _send_ime_control(self, ime_hwnd: int, command: int) -> int | None:
+        result = ctypes.c_ulong()
+        sent = user32.SendMessageTimeoutW(
+            ime_hwnd,
+            WM_IME_CONTROL,
+            command,
+            0,
+            SMTO_ABORTIFHUNG,
+            IME_TIMEOUT_MS,
+            ctypes.byref(result),
+        )
+        return result.value if sent else None
+
+    def _has_ime_conversion_mode(self, conversion_mode: int | None, flag: int) -> bool | None:
+        if conversion_mode is None:
+            return None
+        return bool(conversion_mode & flag)
