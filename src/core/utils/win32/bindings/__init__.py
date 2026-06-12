@@ -2,6 +2,7 @@
 from .dwmapi import *
 from .dxva2 import *
 from .gdi32 import *
+from .imm32 import *
 from .iphlpapi import *
 from .kernel32 import *
 from .ntdll import *

@@ -30,6 +30,7 @@ from ctypes.wintypes import (
 )
 
 from core.utils.win32.structs import (
+    GUITHREADINFO,
     ICONINFO,
 )
 from core.utils.win32.typecheck import CArgObject
@@ -168,6 +169,9 @@ user32.IsWindowEnabled.restype = BOOL
 
 user32.GetWindowThreadProcessId.argtypes = [HWND, LPDWORD]
 user32.GetWindowThreadProcessId.restype = DWORD
+
+user32.GetGUIThreadInfo.argtypes = [DWORD, POINTER(GUITHREADINFO)]
+user32.GetGUIThreadInfo.restype = BOOL
 
 user32.AllowSetForegroundWindow.argtypes = [DWORD]
 user32.AllowSetForegroundWindow.restype = BOOL
@@ -385,6 +389,10 @@ def IsWindowEnabled(hwnd: int) -> bool:
 
 def GetWindowThreadProcessId(hwnd: int, lpdwProcessId: CArgObject | None) -> int:
     return user32.GetWindowThreadProcessId(hwnd, lpdwProcessId)
+
+
+def GetGUIThreadInfo(idThread: int, lpgui: CArgObject) -> bool:
+    return bool(user32.GetGUIThreadInfo(idThread, lpgui))
 
 
 def AllowSetForegroundWindow(dwProcessId: int) -> int:

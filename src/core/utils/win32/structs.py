@@ -482,6 +482,20 @@ class RECT(ct.Structure):
     ]
 
 
+class GUITHREADINFO(ct.Structure):
+    _fields_ = [
+        ("cbSize", DWORD),
+        ("flags", DWORD),
+        ("hwndActive", HWND),
+        ("hwndFocus", HWND),
+        ("hwndCapture", HWND),
+        ("hwndMenuOwner", HWND),
+        ("hwndMoveSize", HWND),
+        ("hwndCaret", HWND),
+        ("rcCaret", RECT),
+    ]
+
+
 class SIZE(ct.Structure):
     _fields_ = [("cx", LONG), ("cy", LONG)]
 
